@@ -17,7 +17,7 @@ func TestEncryptDecrypt(t *testing.T) {
 	}
 
 	msg := []byte("This is a very important message that shall be encrypted...")
-	r := sb.NewReader(msg)
+	r := sb.ByteReader(msg)
 
 	buf, err := ioutil.ReadAll(r)
 	if err != nil {
@@ -25,7 +25,7 @@ func TestEncryptDecrypt(t *testing.T) {
 	}
 
 	w := bytes.NewReader(buf)
-	wb := sb.Read(w)
+	wb := sb.WrapReader(w)
 
 	buf, err = ioutil.ReadAll(wb)
 	if err != nil {
@@ -34,5 +34,20 @@ func TestEncryptDecrypt(t *testing.T) {
 
 	if string(buf) != string(msg) {
 		t.Errorf("did not decrypt, got: %s", buf)
+	}
+}
+
+func TestIOWrap(t *testing.T) {
+	empty := bytes.NewReader(nil)
+
+	sb := SecretBoxIO{}
+	wr := sb.WrapReader(empty)
+
+	buf, err := ioutil.ReadAll(wr)
+	if err != nil {
+		t.Errorf("reading failed: %s", err)
+	}
+	if len(buf) != 0 {
+		t.Errorf("Buffer should be empty, got: %v", buf)
 	}
 }
