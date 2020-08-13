@@ -20,7 +20,9 @@ type S3Opts struct {
 	AccessKeyID     string
 	SecretAccessKey string
 
-	ObjPrefix     string
+	ObjPrefix string
+
+	// EncryptionKey is optional. If you do not wish to encrypt your certficates and key inside the S3 bucket, leave it empty.
 	EncryptionKey []byte
 }
 
