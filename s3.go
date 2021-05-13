@@ -193,7 +193,7 @@ func (s3 *S3) Stat(key string) (certmagic.KeyInfo, error) {
 }
 
 func (s3 *S3) objName(key string) string {
-	return fmt.Sprintf("%s/%s", strings.TrimSuffix(s3.Prefix, "/"), strings.TrimSuffix(key, "/"))
+	return fmt.Sprintf("%s/%s", strings.TrimPrefix(s3.Prefix, "/"), strings.TrimPrefix(key, "/"))
 }
 
 func (s3 *S3) objLockName(key string) string {
