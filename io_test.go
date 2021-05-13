@@ -1,4 +1,4 @@
-package cmgs3
+package s3
 
 import (
 	"bytes"
