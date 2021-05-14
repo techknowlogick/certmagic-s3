@@ -28,4 +28,4 @@ This project was forked from [@thomersch](https://github.com/thomersch)'s wonder
 
 ## License
 
-[Unknown upstream license](https://github.com/thomersch/certmagic-generic-s3/issues/1), please act accordingly.
+This project is licensed under [Apache 2.0](https://github.com/thomersch/certmagic-generic-s3/issues/1), an open source license.
