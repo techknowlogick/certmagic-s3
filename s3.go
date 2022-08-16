@@ -3,10 +3,11 @@ package s3
 import (
 	"bytes"
 	"context"
-	"fmt"
-	"strings"
 	"errors"
+	"fmt"
+	"io/fs"
 	"io/ioutil"
+	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -91,7 +92,7 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 	for {
 		obj, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objLockName(key), minio.GetObjectOptions{})
 		if err == nil {
-			return s3.putLockFile(key)
+			return s3.putLockFile(ctx, key)
 		}
 		buf, err := ioutil.ReadAll(obj)
 		if err != nil {
@@ -101,11 +102,11 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 		lt, err := time.Parse(time.RFC3339, string(buf))
 		if err != nil {
 			// Lock file does not make sense, overwrite.
-			return s3.putLockFile(key)
+			return s3.putLockFile(ctx, key)
 		}
 		if lt.Add(LockTimeout).Before(time.Now()) {
 			// Existing lock file expired, overwrite.
-			return s3.putLockFile(key)
+			return s3.putLockFile(ctx, key)
 		}
 
 		if startedAt.Add(LockTimeout).Before(time.Now()) {
@@ -113,26 +114,24 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 		}
 		time.Sleep(LockPollInterval)
 	}
-	s3.Logger.Error(fmt.Sprintf("Lock error: %s", s3.objName(key)))
-	return errors.New("locking failed")
 }
 
-func (s3 *S3) putLockFile(key string) error {
+func (s3 *S3) putLockFile(ctx context.Context, key string) error {
 	// Object does not exist, we're creating a lock file.
 	r := bytes.NewReader([]byte(time.Now().Format(time.RFC3339)))
-	_, err := s3.Client.PutObject(context.Background(), s3.Bucket, s3.objLockName(key), r, int64(r.Len()), minio.PutObjectOptions{})
+	_, err := s3.Client.PutObject(ctx, s3.Bucket, s3.objLockName(key), r, int64(r.Len()), minio.PutObjectOptions{})
 	return err
 }
 
-func (s3 *S3) Unlock(key string) error {
+func (s3 *S3) Unlock(ctx context.Context, key string) error {
 	s3.Logger.Info(fmt.Sprintf("Release lock: %v", s3.objName(key)))
-	return s3.Client.RemoveObject(context.Background(), s3.Bucket, s3.objLockName(key), minio.RemoveObjectOptions{})
+	return s3.Client.RemoveObject(ctx, s3.Bucket, s3.objLockName(key), minio.RemoveObjectOptions{})
 }
 
-func (s3 *S3) Store(key string, value []byte) error {
+func (s3 *S3) Store(ctx context.Context, key string, value []byte) error {
 	r := s3.iowrap.ByteReader(value)
 	s3.Logger.Info(fmt.Sprintf("Store: %v, %v bytes", s3.objName(key), len(value)))
-	_, err := s3.Client.PutObject(context.Background(),
+	_, err := s3.Client.PutObject(ctx,
 		s3.Bucket,
 		s3.objName(key),
 		r,
@@ -142,9 +141,9 @@ func (s3 *S3) Store(key string, value []byte) error {
 	return err
 }
 
-func (s3 *S3) Load(key string) ([]byte, error) {
+func (s3 *S3) Load(ctx context.Context, key string) ([]byte, error) {
 	s3.Logger.Info(fmt.Sprintf("Load: %v", s3.objName(key)))
-	r, err := s3.Client.GetObject(context.Background(), s3.Bucket, s3.objName(key), minio.GetObjectOptions{})
+	r, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objName(key), minio.GetObjectOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -156,20 +155,20 @@ func (s3 *S3) Load(key string) ([]byte, error) {
 	return buf, nil
 }
 
-func (s3 *S3) Delete(key string) error {
+func (s3 *S3) Delete(ctx context.Context, key string) error {
 	s3.Logger.Info(fmt.Sprintf("Delete: %v", s3.objName(key)))
-	return s3.Client.RemoveObject(context.Background(), s3.Bucket, s3.objName(key), minio.RemoveObjectOptions{})
+	return s3.Client.RemoveObject(ctx, s3.Bucket, s3.objName(key), minio.RemoveObjectOptions{})
 }
 
-func (s3 *S3) Exists(key string) bool {
+func (s3 *S3) Exists(ctx context.Context, key string) bool {
 	s3.Logger.Info(fmt.Sprintf("Exists: %v", s3.objName(key)))
-	_, err := s3.Client.StatObject(context.Background(), s3.Bucket, s3.objName(key), minio.StatObjectOptions{})
+	_, err := s3.Client.StatObject(ctx, s3.Bucket, s3.objName(key), minio.StatObjectOptions{})
 	return err == nil
 }
 
-func (s3 *S3) List(prefix string, recursive bool) ([]string, error) {
+func (s3 *S3) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
 	var keys []string
-	for obj := range s3.Client.ListObjects(context.Background(), s3.Bucket, minio.ListObjectsOptions{
+	for obj := range s3.Client.ListObjects(ctx, s3.Bucket, minio.ListObjectsOptions{
 		Prefix:    s3.objName(""),
 		Recursive: true,
 	}) {
@@ -178,12 +177,12 @@ func (s3 *S3) List(prefix string, recursive bool) ([]string, error) {
 	return keys, nil
 }
 
-func (s3 *S3) Stat(key string) (certmagic.KeyInfo, error) {
+func (s3 *S3) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
 	s3.Logger.Info(fmt.Sprintf("Stat: %v", s3.objName(key)))
 	var ki certmagic.KeyInfo
-	oi, err := s3.Client.StatObject(context.Background(), s3.Bucket, s3.objName(key), minio.StatObjectOptions{})
+	oi, err := s3.Client.StatObject(ctx, s3.Bucket, s3.objName(key), minio.StatObjectOptions{})
 	if err != nil {
-		return ki, certmagic.ErrNotExist(err)
+		return ki, fs.ErrNotExist
 	}
 	ki.Key = key
 	ki.Size = oi.Size
@@ -237,7 +236,7 @@ func (s3 *S3) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 }
 
 var (
-	_ caddy.Provisioner = (*S3)(nil)
+	_ caddy.Provisioner      = (*S3)(nil)
 	_ caddy.StorageConverter = (*S3)(nil)
 	_ caddyfile.Unmarshaler  = (*S3)(nil)
 )
