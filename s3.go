@@ -145,11 +145,18 @@ func (s3 *S3) Load(ctx context.Context, key string) ([]byte, error) {
 	s3.Logger.Info(fmt.Sprintf("Load: %v", s3.objName(key)))
 	r, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objName(key), minio.GetObjectOptions{})
 	if err != nil {
+		if err.Error() == "The specified key does not exist." {
+			return nil, fs.ErrNotExist
+		}
 		return nil, err
+	} else {
 	}
 	defer r.Close()
 	buf, err := ioutil.ReadAll(s3.iowrap.WrapReader(r))
 	if err != nil {
+		if err.Error() == "The specified key does not exist." {
+			return nil, fs.ErrNotExist
+		}
 		return nil, err
 	}
 	return buf, nil
