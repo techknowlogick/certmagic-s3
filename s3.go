@@ -149,14 +149,20 @@ func (s3 *S3) Load(ctx context.Context, key string) ([]byte, error) {
 			return nil, fs.ErrNotExist
 		}
 		return nil, err
-	} else {
+	} else if r != nil {
+		// AWS (at least) doesn't return an error on key doesn't exist. We have
+		// to examine the empty object returned.
+		_, err = r.Stat()
+		if err != nil {
+			er := minio.ToErrorResponse(err)
+			if er.StatusCode == 404 {
+				return nil, fs.ErrNotExist
+			}
+		}
 	}
 	defer r.Close()
 	buf, err := ioutil.ReadAll(s3.iowrap.WrapReader(r))
 	if err != nil {
-		if err.Error() == "The specified key does not exist." {
-			return nil, fs.ErrNotExist
-		}
 		return nil, err
 	}
 	return buf, nil
