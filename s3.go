@@ -5,8 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-	"io/ioutil"
 	"strings"
 	"time"
 
@@ -94,7 +94,7 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 		if err == nil {
 			return s3.putLockFile(ctx, key)
 		}
-		buf, err := ioutil.ReadAll(obj)
+		buf, err := io.ReadAll(obj)
 		if err != nil {
 			// Retry
 			continue
@@ -161,7 +161,7 @@ func (s3 *S3) Load(ctx context.Context, key string) ([]byte, error) {
 		}
 	}
 	defer r.Close()
-	buf, err := ioutil.ReadAll(s3.iowrap.WrapReader(r))
+	buf, err := io.ReadAll(s3.iowrap.WrapReader(r))
 	if err != nil {
 		return nil, err
 	}
