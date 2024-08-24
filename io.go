@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
-	"io/ioutil"
 
 	"golang.org/x/crypto/nacl/secretbox"
 )
@@ -73,7 +72,7 @@ func (sb *SecretBoxIO) WrapReader(r io.Reader) io.Reader {
 		return Reader{nil, 0, err}
 	}
 
-	buf, _ := ioutil.ReadAll(r)
+	buf, _ := io.ReadAll(r)
 	bout, ok := secretbox.Open(nil, buf, &nonce, &sb.SecretKey)
 	if !ok {
 		return Reader{nil, 0, errors.New("decryption failed")}

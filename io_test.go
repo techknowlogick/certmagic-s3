@@ -2,7 +2,7 @@ package s3
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"testing"
 )
 
@@ -19,7 +19,7 @@ func TestEncryptDecrypt(t *testing.T) {
 	msg := []byte("This is a very important message that shall be encrypted...")
 	r := sb.ByteReader(msg)
 
-	buf, err := ioutil.ReadAll(r)
+	buf, err := io.ReadAll(r)
 	if err != nil {
 		t.Errorf("encrypting failed: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestEncryptDecrypt(t *testing.T) {
 	w := bytes.NewReader(buf)
 	wb := sb.WrapReader(w)
 
-	buf, err = ioutil.ReadAll(wb)
+	buf, err = io.ReadAll(wb)
 	if err != nil {
 		t.Errorf("decrypting failed: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestIOWrap(t *testing.T) {
 	sb := SecretBoxIO{}
 	wr := sb.WrapReader(empty)
 
-	buf, err := ioutil.ReadAll(wr)
+	buf, err := io.ReadAll(wr)
 	if err != nil {
 		t.Errorf("reading failed: %s", err)
 	}
