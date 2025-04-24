@@ -98,78 +98,99 @@ var (
 )
 
 func (s3 *S3) Lock(ctx context.Context, key string) error {
-	s3.Logger.Info(fmt.Sprintf("Lock: attempting to lock %v", s3.objName(key)))
-	var startedAt = time.Now()
+    s3.Logger.Info(fmt.Sprintf("Lock: attempting to lock %v", s3.objName(key)))
+    var startedAt = time.Now()
 
-	for {
-		s3.Logger.Debug(fmt.Sprintf("Lock: checking if lock file exists for %v", s3.objName(key)))
-		obj, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objLockName(key), minio.GetObjectOptions{})
-		if err != nil {
-			s3.Logger.Debug(fmt.Sprintf("Lock: error getting lock file: %v", err))
-			
-			// Print the exact error type and message for debugging
-			s3.Logger.Debug(fmt.Sprintf("Lock: error type: %T, message: %v", err, err.Error()))
-			
-			// Try to create lock file for any error from GetObject
-			// This is a more aggressive approach but should work for missing files
-			s3.Logger.Info(fmt.Sprintf("Lock: attempting to create lock file for %v", s3.objLockName(key)))
-			createErr := s3.putLockFile(ctx, key)
-			if createErr != nil {
-				s3.Logger.Error(fmt.Sprintf("Lock: failed to create lock file: %v", createErr))
-				return createErr
-			}
-			s3.Logger.Info(fmt.Sprintf("Lock: successfully created lock file for %v", s3.objLockName(key)))
-			return nil
-		}
-		
-		// If we get here, the object exists, so we need to check if it's valid
-		s3.Logger.Debug(fmt.Sprintf("Lock: lock file exists for %v", s3.objName(key)))
-		
-		// Ensure object is closed to prevent goroutine leaks
-		defer obj.Close()
-		
-		s3.Logger.Debug(fmt.Sprintf("Lock: reading lock file content for %v", s3.objName(key)))
-		buf, err := io.ReadAll(obj)
-		if err != nil {
-			// Close explicitly in case defer doesn't execute in loop
-			obj.Close()
-			
-			s3.Logger.Debug(fmt.Sprintf("Lock: error reading lock file: %v", err))
-			// Retry if within timeout
-			if startedAt.Add(LockTimeout).Before(time.Now()) {
-				s3.Logger.Error(fmt.Sprintf("Lock: failed to read lock file after timeout: %v", err))
-				return fmt.Errorf("failed to read lock file: %w", err)
-			}
-			time.Sleep(LockPollInterval)
-			continue
-		}
-		
-		s3.Logger.Debug(fmt.Sprintf("Lock: parsing lock timestamp for %v: %s", s3.objName(key), string(buf)))
-		lt, err := time.Parse(time.RFC3339, string(buf))
-		if err != nil {
-			// Lock file does not make sense, overwrite.
-			s3.Logger.Info(fmt.Sprintf("Lock: invalid timestamp in lock file, overwriting for %v", s3.objName(key)))
-			obj.Close()
-			return s3.putLockFile(ctx, key)
-		}
-		
-		if lt.Add(LockTimeout).Before(time.Now()) {
-			// Existing lock file expired, overwrite.
-			s3.Logger.Info(fmt.Sprintf("Lock: lock file expired, overwriting for %v", s3.objName(key)))
-			obj.Close()
-			return s3.putLockFile(ctx, key)
-		}
+    // 首先尝试直接创建锁文件
+    s3.Logger.Info(fmt.Sprintf("Lock: proactively attempting to create lock file for %v", s3.objLockName(key)))
+    createErr := s3.putLockFile(ctx, key)
+    if createErr == nil {
+        s3.Logger.Info(fmt.Sprintf("Lock: successfully created lock file for %v", s3.objLockName(key)))
+        return nil
+    }
+    s3.Logger.Warn(fmt.Sprintf("Lock: failed initial attempt to create lock file: %v", createErr))
 
-		// Lock is still valid, wait
-		s3.Logger.Debug(fmt.Sprintf("Lock: lock is still valid for %v, waiting", s3.objName(key)))
-		obj.Close()
-		
-		if startedAt.Add(LockTimeout).Before(time.Now()) {
-			s3.Logger.Error(fmt.Sprintf("Lock: timeout waiting for lock for %v", s3.objName(key)))
-			return errors.New("acquiring lock failed")
-		}
-		time.Sleep(LockPollInterval)
-	}
+    // 如果直接创建失败，则进入常规循环
+    for {
+        s3.Logger.Debug(fmt.Sprintf("Lock: checking if lock file exists for %v", s3.objName(key)))
+        
+        // 首先检查文件是否存在
+        exists, statErr := s3.objectExists(ctx, s3.objLockName(key))
+        if statErr != nil {
+            s3.Logger.Error(fmt.Sprintf("Lock: error checking if lock file exists: %v", statErr))
+        }
+        
+        s3.Logger.Debug(fmt.Sprintf("Lock: lock file exists check result: %v", exists))
+        
+        if !exists {
+            // 文件不存在，尝试创建
+            s3.Logger.Info(fmt.Sprintf("Lock: lock file confirmed not to exist, creating for %v", s3.objLockName(key)))
+            createErr := s3.putLockFile(ctx, key)
+            if createErr != nil {
+                s3.Logger.Error(fmt.Sprintf("Lock: failed to create lock file: %v", createErr))
+                return createErr
+            }
+            s3.Logger.Info(fmt.Sprintf("Lock: successfully created lock file for %v", s3.objLockName(key)))
+            return nil
+        }
+        
+        // 文件存在，尝试获取内容
+        obj, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objLockName(key), minio.GetObjectOptions{})
+        if err != nil {
+            s3.Logger.Error(fmt.Sprintf("Lock: error getting lock file that should exist: %v", err))
+            
+            // 如果超时，则返回错误
+            if startedAt.Add(LockTimeout).Before(time.Now()) {
+                return fmt.Errorf("failed to get lock file after confirming existence: %w", err)
+            }
+            time.Sleep(LockPollInterval)
+            continue
+        }
+        
+        // 确保对象关闭以防止goroutine泄漏
+        defer obj.Close()
+        
+        s3.Logger.Debug(fmt.Sprintf("Lock: reading lock file content for %v", s3.objName(key)))
+        buf, err := io.ReadAll(obj)
+        if err != nil {
+            // 显式关闭，以防defer在循环中不执行
+            obj.Close()
+            
+            s3.Logger.Error(fmt.Sprintf("Lock: error reading lock file content: %v", err))
+            // 如果超时，则返回错误
+            if startedAt.Add(LockTimeout).Before(time.Now()) {
+                return fmt.Errorf("failed to read lock file content: %w", err)
+            }
+            time.Sleep(LockPollInterval)
+            continue
+        }
+        
+        s3.Logger.Debug(fmt.Sprintf("Lock: parsing lock timestamp for %v: %s", s3.objName(key), string(buf)))
+        lt, err := time.Parse(time.RFC3339, string(buf))
+        if err != nil {
+            // 锁文件格式不正确，覆盖
+            s3.Logger.Info(fmt.Sprintf("Lock: invalid timestamp in lock file, overwriting for %v", s3.objName(key)))
+            obj.Close()
+            return s3.putLockFile(ctx, key)
+        }
+        
+        if lt.Add(LockTimeout).Before(time.Now()) {
+            // 现有锁文件已过期，覆盖
+            s3.Logger.Info(fmt.Sprintf("Lock: lock file expired, overwriting for %v", s3.objName(key)))
+            obj.Close()
+            return s3.putLockFile(ctx, key)
+        }
+
+        // 锁仍然有效，等待
+        s3.Logger.Debug(fmt.Sprintf("Lock: lock is still valid for %v, waiting", s3.objName(key)))
+        obj.Close()
+        
+        if startedAt.Add(LockTimeout).Before(time.Now()) {
+            s3.Logger.Error(fmt.Sprintf("Lock: timeout waiting for lock for %v", s3.objName(key)))
+            return errors.New("acquiring lock failed")
+        }
+        time.Sleep(LockPollInterval)
+    }
 }
 
 func (s3 *S3) putLockFile(ctx context.Context, key string) error {
@@ -328,6 +349,19 @@ func (s3 *S3) objName(key string) string {
 
 func (s3 *S3) objLockName(key string) string {
 	return s3.objName(key) + ".lock"
+}
+
+// 新增辅助函数，检查对象是否存在
+func (s3 *S3) objectExists(ctx context.Context, objectName string) (bool, error) {
+    _, err := s3.Client.StatObject(ctx, s3.Bucket, objectName, minio.StatObjectOptions{})
+    if err != nil {
+        if strings.Contains(err.Error(), "key does not exist") || 
+           strings.Contains(err.Error(), "NoSuchKey") {
+            return false, nil
+        }
+        return false, err
+    }
+    return true, nil
 }
 
 // CertMagicStorage converts s to a certmagic.Storage instance.
