@@ -72,7 +72,12 @@ func (sb *SecretBoxIO) WrapReader(r io.Reader) io.Reader {
 		return Reader{nil, 0, err}
 	}
 
-	buf, _ := io.ReadAll(r)
+	// Read all data from the reader
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return Reader{nil, 0, err}
+	}
+	
 	bout, ok := secretbox.Open(nil, buf, &nonce, &sb.SecretKey)
 	if !ok {
 		return Reader{nil, 0, errors.New("decryption failed")}

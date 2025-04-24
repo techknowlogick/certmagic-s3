@@ -53,6 +53,18 @@ func (s3 *S3) Provision(context caddy.Context) error {
 	}
 
 	s3.Client = client
+	
+	// Check if bucket exists
+	ctx, cancel := context.WithTimeout(context.Context, 30*time.Second)
+	defer cancel()
+	
+	exists, err := s3.Client.BucketExists(ctx, s3.Bucket)
+	if err != nil {
+		return fmt.Errorf("failed to check if bucket exists: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("bucket %s does not exist", s3.Bucket)
+	}
 
 	if len(s3.EncryptionKey) == 0 {
 		s3.Logger.Info("Clear text certificate storage active")
@@ -91,24 +103,43 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 
 	for {
 		obj, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objLockName(key), minio.GetObjectOptions{})
-		if err == nil {
+		if err != nil {
+			// Object doesn't exist or error occurred, try to create lock file
 			return s3.putLockFile(ctx, key)
 		}
+		
+		// Ensure object is closed to prevent goroutine leaks
+		defer obj.Close()
+		
 		buf, err := io.ReadAll(obj)
 		if err != nil {
-			// Retry
+			// Close explicitly in case defer doesn't execute in loop
+			obj.Close()
+			
+			// Retry if within timeout
+			if startedAt.Add(LockTimeout).Before(time.Now()) {
+				return fmt.Errorf("failed to read lock file: %w", err)
+			}
+			time.Sleep(LockPollInterval)
 			continue
 		}
+		
 		lt, err := time.Parse(time.RFC3339, string(buf))
 		if err != nil {
 			// Lock file does not make sense, overwrite.
+			obj.Close()
 			return s3.putLockFile(ctx, key)
 		}
+		
 		if lt.Add(LockTimeout).Before(time.Now()) {
 			// Existing lock file expired, overwrite.
+			obj.Close()
 			return s3.putLockFile(ctx, key)
 		}
 
+		// Lock is still valid, wait
+		obj.Close()
+		
 		if startedAt.Add(LockTimeout).Before(time.Now()) {
 			return errors.New("acquiring lock failed")
 		}
@@ -119,18 +150,29 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 func (s3 *S3) putLockFile(ctx context.Context, key string) error {
 	// Object does not exist, we're creating a lock file.
 	r := bytes.NewReader([]byte(time.Now().Format(time.RFC3339)))
+	
+	// Use a context with timeout to prevent hanging operations
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	
 	_, err := s3.Client.PutObject(ctx, s3.Bucket, s3.objLockName(key), r, int64(r.Len()), minio.PutObjectOptions{})
 	return err
 }
 
 func (s3 *S3) Unlock(ctx context.Context, key string) error {
 	s3.Logger.Info(fmt.Sprintf("Release lock: %v", s3.objName(key)))
+	// Use a context with timeout to prevent hanging operations
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	return s3.Client.RemoveObject(ctx, s3.Bucket, s3.objLockName(key), minio.RemoveObjectOptions{})
 }
 
 func (s3 *S3) Store(ctx context.Context, key string, value []byte) error {
 	r := s3.iowrap.ByteReader(value)
 	s3.Logger.Info(fmt.Sprintf("Store: %v, %v bytes", s3.objName(key), len(value)))
+	// Use a context with timeout to prevent hanging operations
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	_, err := s3.Client.PutObject(ctx,
 		s3.Bucket,
 		s3.objName(key),
@@ -149,7 +191,12 @@ func (s3 *S3) Load(ctx context.Context, key string) ([]byte, error) {
 			return nil, fs.ErrNotExist
 		}
 		return nil, err
-	} else if r != nil {
+	}
+	
+	// Always ensure the object is closed to prevent goroutine leaks
+	defer r.Close()
+	
+	if r != nil {
 		// AWS (at least) doesn't return an error on key doesn't exist. We have
 		// to examine the empty object returned.
 		_, err = r.Stat()
@@ -158,10 +205,13 @@ func (s3 *S3) Load(ctx context.Context, key string) ([]byte, error) {
 			if er.StatusCode == 404 {
 				return nil, fs.ErrNotExist
 			}
+			return nil, err
 		}
 	}
-	defer r.Close()
-	buf, err := io.ReadAll(s3.iowrap.WrapReader(r))
+	
+	// Create a wrapped reader that properly handles the object stream
+	wrappedReader := s3.iowrap.WrapReader(r)
+	buf, err := io.ReadAll(wrappedReader)
 	if err != nil {
 		return nil, err
 	}
@@ -170,21 +220,34 @@ func (s3 *S3) Load(ctx context.Context, key string) ([]byte, error) {
 
 func (s3 *S3) Delete(ctx context.Context, key string) error {
 	s3.Logger.Info(fmt.Sprintf("Delete: %v", s3.objName(key)))
+	// Use a context with timeout to prevent hanging operations
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	return s3.Client.RemoveObject(ctx, s3.Bucket, s3.objName(key), minio.RemoveObjectOptions{})
 }
 
 func (s3 *S3) Exists(ctx context.Context, key string) bool {
 	s3.Logger.Info(fmt.Sprintf("Exists: %v", s3.objName(key)))
+	// Use a context with timeout to prevent hanging operations
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	_, err := s3.Client.StatObject(ctx, s3.Bucket, s3.objName(key), minio.StatObjectOptions{})
 	return err == nil
 }
 
 func (s3 *S3) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
 	var keys []string
+	// Use a context with timeout to prevent hanging operations
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second) // Longer timeout for listing
+	defer cancel()
+	
 	for obj := range s3.Client.ListObjects(ctx, s3.Bucket, minio.ListObjectsOptions{
 		Prefix:    s3.objName(""),
 		Recursive: true,
 	}) {
+		if obj.Err != nil {
+			return nil, obj.Err
+		}
 		keys = append(keys, obj.Key)
 	}
 	return keys, nil
@@ -193,6 +256,11 @@ func (s3 *S3) List(ctx context.Context, prefix string, recursive bool) ([]string
 func (s3 *S3) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
 	s3.Logger.Info(fmt.Sprintf("Stat: %v", s3.objName(key)))
 	var ki certmagic.KeyInfo
+	
+	// Use a context with timeout to prevent hanging operations
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	
 	oi, err := s3.Client.StatObject(ctx, s3.Bucket, s3.objName(key), minio.StatObjectOptions{})
 	if err != nil {
 		return ki, fs.ErrNotExist
