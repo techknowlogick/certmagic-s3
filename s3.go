@@ -98,49 +98,66 @@ var (
 )
 
 func (s3 *S3) Lock(ctx context.Context, key string) error {
-	s3.Logger.Info(fmt.Sprintf("Lock: %v", s3.objName(key)))
+	s3.Logger.Info(fmt.Sprintf("Lock: attempting to lock %v", s3.objName(key)))
 	var startedAt = time.Now()
 
 	for {
+		s3.Logger.Debug(fmt.Sprintf("Lock: checking if lock file exists for %v", s3.objName(key)))
 		obj, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objLockName(key), minio.GetObjectOptions{})
 		if err != nil {
+			s3.Logger.Debug(fmt.Sprintf("Lock: error getting lock file: %v", err))
 			// Object doesn't exist or error occurred, try to create lock file
-			return s3.putLockFile(ctx, key)
+			s3.Logger.Info(fmt.Sprintf("Lock: lock file doesn't exist, attempting to create for %v", s3.objName(key)))
+			err := s3.putLockFile(ctx, key)
+			if err != nil {
+				s3.Logger.Error(fmt.Sprintf("Lock: failed to create lock file: %v", err))
+			} else {
+				s3.Logger.Info(fmt.Sprintf("Lock: successfully created lock file for %v", s3.objName(key)))
+			}
+			return err
 		}
 		
 		// Ensure object is closed to prevent goroutine leaks
 		defer obj.Close()
 		
+		s3.Logger.Debug(fmt.Sprintf("Lock: reading lock file content for %v", s3.objName(key)))
 		buf, err := io.ReadAll(obj)
 		if err != nil {
 			// Close explicitly in case defer doesn't execute in loop
 			obj.Close()
 			
+			s3.Logger.Debug(fmt.Sprintf("Lock: error reading lock file: %v", err))
 			// Retry if within timeout
 			if startedAt.Add(LockTimeout).Before(time.Now()) {
+				s3.Logger.Error(fmt.Sprintf("Lock: failed to read lock file after timeout: %v", err))
 				return fmt.Errorf("failed to read lock file: %w", err)
 			}
 			time.Sleep(LockPollInterval)
 			continue
 		}
 		
+		s3.Logger.Debug(fmt.Sprintf("Lock: parsing lock timestamp for %v: %s", s3.objName(key), string(buf)))
 		lt, err := time.Parse(time.RFC3339, string(buf))
 		if err != nil {
 			// Lock file does not make sense, overwrite.
+			s3.Logger.Info(fmt.Sprintf("Lock: invalid timestamp in lock file, overwriting for %v", s3.objName(key)))
 			obj.Close()
 			return s3.putLockFile(ctx, key)
 		}
 		
 		if lt.Add(LockTimeout).Before(time.Now()) {
 			// Existing lock file expired, overwrite.
+			s3.Logger.Info(fmt.Sprintf("Lock: lock file expired, overwriting for %v", s3.objName(key)))
 			obj.Close()
 			return s3.putLockFile(ctx, key)
 		}
 
 		// Lock is still valid, wait
+		s3.Logger.Debug(fmt.Sprintf("Lock: lock is still valid for %v, waiting", s3.objName(key)))
 		obj.Close()
 		
 		if startedAt.Add(LockTimeout).Before(time.Now()) {
+			s3.Logger.Error(fmt.Sprintf("Lock: timeout waiting for lock for %v", s3.objName(key)))
 			return errors.New("acquiring lock failed")
 		}
 		time.Sleep(LockPollInterval)
@@ -149,13 +166,20 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 
 func (s3 *S3) putLockFile(ctx context.Context, key string) error {
 	// Object does not exist, we're creating a lock file.
+	s3.Logger.Debug(fmt.Sprintf("putLockFile: creating lock file for %v", s3.objLockName(key)))
 	r := bytes.NewReader([]byte(time.Now().Format(time.RFC3339)))
 	
 	// Use a context with timeout to prevent hanging operations
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	
+	s3.Logger.Debug(fmt.Sprintf("putLockFile: putting object to bucket %s with key %s", s3.Bucket, s3.objLockName(key)))
 	_, err := s3.Client.PutObject(ctx, s3.Bucket, s3.objLockName(key), r, int64(r.Len()), minio.PutObjectOptions{})
+	if err != nil {
+		s3.Logger.Error(fmt.Sprintf("putLockFile: failed to put lock file: %v", err))
+	} else {
+		s3.Logger.Debug(fmt.Sprintf("putLockFile: successfully created lock file for %v", s3.objLockName(key)))
+	}
 	return err
 }
 
