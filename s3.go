@@ -106,15 +106,22 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 		obj, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objLockName(key), minio.GetObjectOptions{})
 		if err != nil {
 			s3.Logger.Debug(fmt.Sprintf("Lock: error getting lock file: %v", err))
-			// Object doesn't exist or error occurred, try to create lock file
-			s3.Logger.Info(fmt.Sprintf("Lock: lock file doesn't exist, attempting to create for %v", s3.objName(key)))
-			err := s3.putLockFile(ctx, key)
-			if err != nil {
-				s3.Logger.Error(fmt.Sprintf("Lock: failed to create lock file: %v", err))
-			} else {
-				s3.Logger.Info(fmt.Sprintf("Lock: successfully created lock file for %v", s3.objName(key)))
+			
+			// Check if the error is because the object doesn't exist
+			if strings.Contains(err.Error(), "key does not exist") || 
+			   strings.Contains(err.Error(), "NoSuchKey") {
+				// Object doesn't exist, try to create lock file
+				s3.Logger.Info(fmt.Sprintf("Lock: lock file doesn't exist, attempting to create for %v", s3.objLockName(key)))
+				return s3.putLockFile(ctx, key)
 			}
-			return err
+			
+			// For other errors, retry if within timeout
+			if startedAt.Add(LockTimeout).Before(time.Now()) {
+				s3.Logger.Error(fmt.Sprintf("Lock: failed to check lock file after timeout: %v", err))
+				return fmt.Errorf("failed to check lock file: %w", err)
+			}
+			time.Sleep(LockPollInterval)
+			continue
 		}
 		
 		// Ensure object is closed to prevent goroutine leaks
