@@ -241,14 +241,32 @@ func (s3 *S3) List(ctx context.Context, prefix string, recursive bool) ([]string
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second) // Longer timeout for listing
 	defer cancel()
 	
+	// Construct the full prefix by combining the storage prefix and the requested prefix
+	fullPrefix := s3.objName(prefix)
+	s3.Logger.Info(fmt.Sprintf("List: prefix=%s, recursive=%v", fullPrefix, recursive))
+	
 	for obj := range s3.Client.ListObjects(ctx, s3.Bucket, minio.ListObjectsOptions{
-		Prefix:    s3.objName(""),
-		Recursive: true,
+		Prefix:    fullPrefix,
+		Recursive: recursive,
 	}) {
 		if obj.Err != nil {
 			return nil, obj.Err
 		}
-		keys = append(keys, obj.Key)
+		
+		// Extract the key by removing the storage prefix
+		// This ensures we return keys in the format expected by certmagic
+		storagePrefix := s3.objName("")
+		key := strings.TrimPrefix(obj.Key, storagePrefix)
+		
+		// Skip lock files
+		if strings.HasSuffix(key, ".lock") {
+			continue
+		}
+		
+		// Remove leading slash if present
+		key = strings.TrimPrefix(key, "/")
+		
+		keys = append(keys, key)
 	}
 	return keys, nil
 }
