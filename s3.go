@@ -39,8 +39,8 @@ func init() {
 	caddy.RegisterModule(new(S3))
 }
 
-func (s3 *S3) Provision(context caddy.Context) error {
-	s3.Logger = context.Logger(s3)
+func (s3 *S3) Provision(caddyCtx caddy.Context) error {
+	s3.Logger = caddyCtx.Logger(s3)
 
 	// S3 Client
 	client, err := minio.New(s3.Host, &minio.Options{
