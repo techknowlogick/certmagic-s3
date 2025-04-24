@@ -107,22 +107,23 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 		if err != nil {
 			s3.Logger.Debug(fmt.Sprintf("Lock: error getting lock file: %v", err))
 			
-			// Check if the error is because the object doesn't exist
-			if strings.Contains(err.Error(), "key does not exist") || 
-			   strings.Contains(err.Error(), "NoSuchKey") {
-				// Object doesn't exist, try to create lock file
-				s3.Logger.Info(fmt.Sprintf("Lock: lock file doesn't exist, attempting to create for %v", s3.objLockName(key)))
-				return s3.putLockFile(ctx, key)
-			}
+			// Print the exact error type and message for debugging
+			s3.Logger.Debug(fmt.Sprintf("Lock: error type: %T, message: %v", err, err.Error()))
 			
-			// For other errors, retry if within timeout
-			if startedAt.Add(LockTimeout).Before(time.Now()) {
-				s3.Logger.Error(fmt.Sprintf("Lock: failed to check lock file after timeout: %v", err))
-				return fmt.Errorf("failed to check lock file: %w", err)
+			// Try to create lock file for any error from GetObject
+			// This is a more aggressive approach but should work for missing files
+			s3.Logger.Info(fmt.Sprintf("Lock: attempting to create lock file for %v", s3.objLockName(key)))
+			createErr := s3.putLockFile(ctx, key)
+			if createErr != nil {
+				s3.Logger.Error(fmt.Sprintf("Lock: failed to create lock file: %v", createErr))
+				return createErr
 			}
-			time.Sleep(LockPollInterval)
-			continue
+			s3.Logger.Info(fmt.Sprintf("Lock: successfully created lock file for %v", s3.objLockName(key)))
+			return nil
 		}
+		
+		// If we get here, the object exists, so we need to check if it's valid
+		s3.Logger.Debug(fmt.Sprintf("Lock: lock file exists for %v", s3.objName(key)))
 		
 		// Ensure object is closed to prevent goroutine leaks
 		defer obj.Close()
