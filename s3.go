@@ -55,7 +55,7 @@ func (s3 *S3) Provision(context caddy.Context) error {
 	s3.Client = client
 	
 	// Check if bucket exists
-	ctx, cancel := context.WithTimeout(context.Context, 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	
 	exists, err := s3.Client.BucketExists(ctx, s3.Bucket)
