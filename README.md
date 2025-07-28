@@ -1,23 +1,23 @@
 # Certmagic Storage Backend for S3
 
-This library allows you to use any S3-compatible provider as key/certificate storage backend for your [Certmagic](https://github.com/caddyserver/certmagic)-enabled HTTPS server. To protect your keys from unwanted attention, client-side encryption using [secretbox](https://pkg.go.dev/golang.org/x/crypto/nacl/secretbox?tab=doc) is possible.
+This library allows you to use any S3-compatible provider as key/certificate storage backend for your [Certmagic](https://github.com/caddyserver/certmagic)-enabled HTTPS server. To protect your keys from unwanted attention, client-side encryption is possible using the [secretbox](https://pkg.go.dev/golang.org/x/crypto/nacl/secretbox?tab=doc) package.
 
 ## Configuration Options
 
-- `endpoint`: Custom endpoint URL (optional, defaults to "https://s3.amazonaws.com")
+- `endpoint`: Custom endpoint URL (optional)
 - `host`: **Deprecated** - Use `endpoint` instead.
 - `insecure`: Skip TLS certificate verification (optional, defaults to `false`)
 - `bucket`: S3 bucket name (required, no default value)
-- `region`: AWS region (optional,defaults to `us-east-1`)
+- `region`: AWS region (optional, defaults to `us-east-1`)
 - `access_key`: AWS access key (optional)
 - `secret_key`: AWS secret key (optional)
 - `profile`: AWS profile name (optional)
 - `role_arn`: IAM role ARN for role assumption (optional)
 - `prefix`: Object key prefix (defaults to "acme")
-- `encryption_key`: 32-byte encryption key for client-side encryption (optional, if not set then files will be plaintext in object storage)
-- `use_path_style`: Force path-style URLs (optional, enforced as `true` when custom endpoint used)
+- `encryption_key`: 32-byte encryption key for client-side encryption (optional, if not set, then files will be plaintext in object storage)
+- `use_path_style`: Force path-style URLs (optional, enforced as `true` when a custom endpoint is used)
 
-If both `host` and `endpoint` are specified, `endpoint` takes precedence.
+If both `host` and `endpoint` are specified, an error is reported.
 
 ## What is an S3-compatible service?
 
