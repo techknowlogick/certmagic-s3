@@ -438,7 +438,7 @@ func (s3 *S3) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		var value string
 
 		if !d.Args(&value) {
-			return d.ArgErr()
+			continue;
 		}
 
 		switch key {
