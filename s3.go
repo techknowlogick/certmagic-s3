@@ -364,9 +364,13 @@ func (s3 *S3) Exists(ctx context.Context, key string) bool {
 func (s3 *S3) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
 	var keys []string
 
+	fullPrefix := s3.objName(prefix)
+	if prefix != "" {
+		fullPrefix += "/"
+	}
 	input := &s3sdk.ListObjectsV2Input{
 		Bucket: aws.String(s3.Bucket),
-		Prefix: aws.String(s3.objName("")),
+		Prefix: aws.String(fullPrefix),
 	}
 
 	paginator := s3sdk.NewListObjectsV2Paginator(s3.Client, input)
@@ -377,7 +381,9 @@ func (s3 *S3) List(ctx context.Context, prefix string, recursive bool) ([]string
 		}
 
 		for _, obj := range result.Contents {
-			keys = append(keys, aws.ToString(obj.Key))
+			key := aws.ToString(obj.Key)
+			// Strip the configured prefix from the key before appending
+			keys = append(keys, strings.TrimPrefix(key, s3.objName("")))
 		}
 	}
 
