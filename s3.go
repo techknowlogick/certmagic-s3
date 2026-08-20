@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,18 @@ func init() {
 
 func (s3 *S3) Provision(ctx caddy.Context) error {
 	s3.Logger = ctx.Logger(s3)
+
+	s3.loadFromEnv()
+
+	if s3.Bucket == "" {
+		return errors.New("bucket is required")
+	}
+	if s3.Host != "" && s3.Endpoint != "" {
+		return errors.New("cannot specify both 'host' and 'endpoint' options")
+	}
+	if s3.EncryptionKey != "" && len(s3.EncryptionKey) != 32 {
+		return fmt.Errorf("encryption_key must be exactly 32 bytes, got %d", len(s3.EncryptionKey))
+	}
 
 	if s3.Host != "" {
 		s3.Logger.Info("Using deprecated 'host' option, consider switching to 'endpoint'",
@@ -457,6 +470,36 @@ func parseBool(value string) (bool, error) {
 	return strconv.ParseBool(value)
 }
 
+func (s3 *S3) loadFromEnv() {
+	if s3.Endpoint == "" {
+		s3.Endpoint = os.Getenv("CERTMAGIC_S3_ENDPOINT")
+	}
+	if s3.Bucket == "" {
+		s3.Bucket = os.Getenv("CERTMAGIC_S3_BUCKET")
+	}
+	if s3.Region == "" {
+		s3.Region = os.Getenv("CERTMAGIC_S3_REGION")
+	}
+	if s3.AccessKey == "" {
+		s3.AccessKey = os.Getenv("CERTMAGIC_S3_ACCESS_KEY")
+	}
+	if s3.SecretKey == "" {
+		s3.SecretKey = os.Getenv("CERTMAGIC_S3_SECRET_KEY")
+	}
+	if s3.Profile == "" {
+		s3.Profile = os.Getenv("CERTMAGIC_S3_PROFILE")
+	}
+	if s3.RoleARN == "" {
+		s3.RoleARN = os.Getenv("CERTMAGIC_S3_ROLE_ARN")
+	}
+	if s3.Prefix == "" {
+		s3.Prefix = os.Getenv("CERTMAGIC_S3_PREFIX")
+	}
+	if s3.EncryptionKey == "" {
+		s3.EncryptionKey = os.Getenv("CERTMAGIC_S3_ENCRYPTION_KEY")
+	}
+}
+
 func (s3 *S3) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		key := d.Val()
@@ -492,9 +535,6 @@ func (s3 *S3) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		case "prefix":
 			s3.Prefix = value
 		case "encryption_key":
-			if value != "" && len(value) != 32 {
-				return d.Errf("encryption_key must be exactly 32 bytes, got %d", len(value))
-			}
 			s3.EncryptionKey = value
 		case "use_path_style":
 			parsed, err := parseBool(value)
@@ -514,13 +554,6 @@ func (s3 *S3) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		s3.Prefix = "acme"
 	}
 
-	if s3.Bucket == "" {
-		return d.Err("bucket is required")
-	}
-
-	if s3.Host != "" && s3.Endpoint != "" {
-		return d.Err("cannot specify both 'host' and 'endpoint' options")
-	}
 	if s3.Host != "" && s3.Endpoint == "" {
 		s3.Endpoint = "https://" + s3.Host
 	}
