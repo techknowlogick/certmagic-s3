@@ -180,12 +180,31 @@ func (s3 *S3) Lock(ctx context.Context, key string) error {
 			if errors.As(err, &nsk) {
 				return s3.putLockFile(ctx, key)
 			}
+			// A persistent GetObject error (e.g. an already-expired ctx,
+			// which fails before any network I/O) must not retry in a tight
+			// loop: honor ctx, the give-up timeout, and the poll interval
+			// on every retry path.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("acquiring lock: %w", ctxErr)
+			}
+			if startedAt.Add(LockTimeout).Before(time.Now()) {
+				return fmt.Errorf("acquiring lock failed: %w", err)
+			}
+			time.Sleep(LockPollInterval)
 			continue
 		}
 
 		buf, err := io.ReadAll(result.Body)
 		_ = result.Body.Close()
 		if err != nil {
+			// Same guards as the GetObject error path above.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("acquiring lock: %w", ctxErr)
+			}
+			if startedAt.Add(LockTimeout).Before(time.Now()) {
+				return fmt.Errorf("acquiring lock failed: %w", err)
+			}
+			time.Sleep(LockPollInterval)
 			continue
 		}
 
