@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	s3sdk "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -36,9 +37,9 @@ var (
 // write to it or removal of it names the ETag its writer last saw, so an
 // instance only ever replaces the lock it holds or the stale one it read.
 // The object's body is the time of the last write, readable by older
-// versions of this module; staleness is judged by the object's LastModified,
-// which the storage service sets, so holders and waiters need not agree on
-// the time.
+// versions of this module; staleness is judged by the object's LastModified
+// against the Date of the response, both set by the storage service, so
+// holders and waiters need not agree on the time.
 
 type heldLock struct {
 	mu   sync.Mutex
@@ -121,7 +122,11 @@ func (s3 *S3) tryLock(ctx context.Context, name string) (string, error) {
 		}
 		return "", err
 	}
-	if head.LastModified == nil || time.Since(*head.LastModified) < LockExpiration {
+	now, ok := awsmiddleware.GetServerTime(head.ResultMetadata)
+	if !ok {
+		now = time.Now()
+	}
+	if head.LastModified == nil || now.Sub(*head.LastModified) < LockExpiration {
 		return "", nil
 	}
 
@@ -230,27 +235,26 @@ func (s3 *S3) Unlock(ctx context.Context, key string) error {
 
 	close(h.stop)
 	<-h.done
-	etag := h.currentETag()
 
-	head, err := s3.Client.HeadObject(ctx, &s3sdk.HeadObjectInput{
-		Bucket: aws.String(s3.Bucket),
-		Key:    aws.String(name),
+	// Refresh the lock before deleting it, so that no waiter can judge it
+	// stale while the delete is in flight on services that ignore If-Match
+	// on DELETE.
+	ctx, cancel := context.WithTimeout(ctx, LockExpiration/2)
+	defer cancel()
+	etag, err := s3.putLock(ctx, name, func(in *s3sdk.PutObjectInput) {
+		in.IfMatch = aws.String(h.currentETag())
 	})
-	if err != nil {
-		if isNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("releasing lock %s: %w", name, err)
-	}
-	if aws.ToString(head.ETag) != etag {
+	switch {
+	case err == nil:
+	case isNotFound(err):
+		return nil
+	case isPreconditionFailed(err):
 		s3.Logger.Warn("lock was taken over by another instance; leaving it", zap.String("key", name))
 		return nil
+	default:
+		return fmt.Errorf("releasing lock %s: %w", name, err)
 	}
 
-	// If-Match makes the delete atomic where the service supports it. Where
-	// it is ignored, the ETag check above still keeps a live lock from being
-	// deleted unless it was taken over in the moment between the two calls,
-	// which can only happen once this holder had stopped refreshing it.
 	_, err = s3.Client.DeleteObject(ctx, &s3sdk.DeleteObjectInput{
 		Bucket:  aws.String(s3.Bucket),
 		Key:     aws.String(name),
