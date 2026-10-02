@@ -1,7 +1,6 @@
 package s3
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -50,6 +50,9 @@ type S3 struct {
 	EncryptionKey string `json:"encryption_key"`
 
 	iowrap IO
+
+	locksMu sync.Mutex
+	locks   map[string]*heldLock
 }
 
 func init() {
@@ -169,82 +172,6 @@ func (s3 *S3) CaddyModule() caddy.ModuleInfo {
 			return new(S3)
 		},
 	}
-}
-
-var (
-	LockExpiration   = 2 * time.Minute
-	LockPollInterval = 1 * time.Second
-	LockTimeout      = 15 * time.Second
-)
-
-func (s3 *S3) Lock(ctx context.Context, key string) error {
-	s3.Logger.Info(fmt.Sprintf("Lock: %v", s3.objName(key)))
-	startedAt := time.Now()
-
-	for {
-		input := &s3sdk.GetObjectInput{
-			Bucket: aws.String(s3.Bucket),
-			Key:    aws.String(s3.objLockName(key)),
-		}
-
-		result, err := s3.Client.GetObject(ctx, input)
-		if err != nil {
-			var nsk *types.NoSuchKey
-			if errors.As(err, &nsk) {
-				return s3.putLockFile(ctx, key)
-			}
-			continue
-		}
-
-		buf, err := io.ReadAll(result.Body)
-		_ = result.Body.Close()
-		if err != nil {
-			continue
-		}
-
-		lt, err := time.Parse(time.RFC3339, string(buf))
-		if err != nil {
-			// Lock file does not make sense, overwrite.
-			return s3.putLockFile(ctx, key)
-		}
-		if lt.Add(LockTimeout).Before(time.Now()) {
-			// Existing lock file expired, overwrite.
-			return s3.putLockFile(ctx, key)
-		}
-
-		if startedAt.Add(LockTimeout).Before(time.Now()) {
-			return errors.New("acquiring lock failed")
-		}
-		time.Sleep(LockPollInterval)
-	}
-}
-
-func (s3 *S3) putLockFile(ctx context.Context, key string) error {
-	// Object does not exist, we're creating a lock file.
-	lockData := []byte(time.Now().Format(time.RFC3339))
-	r := bytes.NewReader(lockData)
-
-	input := &s3sdk.PutObjectInput{
-		Bucket:        aws.String(s3.Bucket),
-		Key:           aws.String(s3.objLockName(key)),
-		Body:          r,
-		ContentLength: aws.Int64(int64(len(lockData))),
-	}
-
-	_, err := s3.Client.PutObject(ctx, input)
-	return err
-}
-
-func (s3 *S3) Unlock(ctx context.Context, key string) error {
-	s3.Logger.Info(fmt.Sprintf("Release lock: %v", s3.objName(key)))
-
-	input := &s3sdk.DeleteObjectInput{
-		Bucket: aws.String(s3.Bucket),
-		Key:    aws.String(s3.objLockName(key)),
-	}
-
-	_, err := s3.Client.DeleteObject(ctx, input)
-	return err
 }
 
 func (s3 *S3) Store(ctx context.Context, key string, value []byte) error {
