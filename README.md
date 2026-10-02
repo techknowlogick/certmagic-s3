@@ -19,6 +19,23 @@ This library allows you to use any S3-compatible provider as key/certificate sto
 
 If both `host` and `endpoint` are specified, an error is reported.
 
+## Environment Variables
+
+The following configuration options can also be set using environment variables. The value in the Caddyfile will 
+take precedence over the corresponding environment variable. 
+
+| Configuration Option | Environment Variable |
+|---------------------|---------------------|
+| `endpoint` | `CERTMAGIC_S3_ENDPOINT` |
+| `bucket` | `CERTMAGIC_S3_BUCKET` |
+| `region` | `CERTMAGIC_S3_REGION` |
+| `access_key` | `CERTMAGIC_S3_ACCESS_KEY` |
+| `secret_key` | `CERTMAGIC_S3_SECRET_KEY` |
+| `profile` | `CERTMAGIC_S3_PROFILE` |
+| `role_arn` | `CERTMAGIC_S3_ROLE_ARN` |
+| `prefix` | `CERTMAGIC_S3_PREFIX` |
+| `encryption_key` | `CERTMAGIC_S3_ENCRYPTION_KEY` |
+
 ## What is an S3-compatible service?
 
 Any service must support the following:
