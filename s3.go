@@ -300,6 +300,10 @@ func (s3 *S3) List(ctx context.Context, prefix string, recursive bool) ([]string
 		Prefix: aws.String(fullPrefix),
 	}
 
+	if !recursive {
+		input.Delimiter = aws.String("/")
+	}
+
 	paginator := s3sdk.NewListObjectsV2Paginator(s3.Client, input)
 	for paginator.HasMorePages() {
 		result, err := paginator.NextPage(ctx)
@@ -311,6 +315,14 @@ func (s3 *S3) List(ctx context.Context, prefix string, recursive bool) ([]string
 			key := aws.ToString(obj.Key)
 			// Strip the configured prefix from the key before appending
 			keys = append(keys, strings.TrimPrefix(key, s3.objName("")))
+		}
+		if !recursive {
+			for _, cp := range result.CommonPrefixes {
+				prefixStr := aws.ToString(cp.Prefix)
+				relPath := strings.TrimPrefix(prefixStr, s3.objName(""))
+				relPath = strings.TrimSuffix(relPath, "/")
+				keys = append(keys, relPath)
+			}
 		}
 	}
 
